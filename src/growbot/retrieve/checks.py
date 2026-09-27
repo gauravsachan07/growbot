@@ -25,6 +25,8 @@ import sys
 
 from growbot.config import (
     EDU_LINK,
+    EMBEDDING_BACKEND,
+    EMBEDDING_DIM,
     FACTSHEET_LINKS,
     GENERAL_SCHEME,
     SCHEMES,
@@ -324,6 +326,71 @@ def main() -> int:
             f"entry {hit.rank} carries its own fetch date",
         )
     print(f"    {len(hits)} entries, {len(assembly.context)} chars")
+
+    # --- 8. the two embedding backends agree ------------------------------
+    # `EMBEDDING_BACKEND` picks the runtime that encodes every chunk and every
+    # question, and the default exists purely to save ~341 MB. The only way
+    # that trade can go wrong is if the two runtimes disagree - and then the
+    # symptom is not a crash, it is a similarity score that quietly stops
+    # matching the index it was measured against, which shows up much later as
+    # a wrong citation. So it is asserted on every run rather than left to the
+    # measurement quoted in embed.py's docstring.
+    print("\n  embedding backend equivalence")
+    import numpy as np
+
+    from growbot.ingest.embed import embed_texts, get_torch_model
+
+    # The real serving function, not a re-implementation of it, so the check
+    # covers whatever `EMBEDDING_BACKEND` actually selects.
+    probes = [
+        *EVAL_QUESTIONS,
+        "HDFC Small Cap Fund - Direct Growth. 3Y Lock-in. Benchmark: Nifty Smallcap 250.",
+    ]
+    produced = embed_texts(probes)
+    reference = get_torch_model().encode(
+        list(probes),
+        convert_to_numpy=True,
+        normalize_embeddings=False,
+        show_progress_bar=False,
+    )
+
+    worst_cosine = 1.0
+    worst_gap = 0.0
+    for position, probe in enumerate(probes):
+        actual = np.asarray(produced[position], dtype="float64")
+        expected = np.asarray(reference[position], dtype="float64")
+        checks.equal(
+            actual.shape[0], EMBEDDING_DIM, f"vector is {EMBEDDING_DIM}-d: {probe[:26]}"
+        )
+        cosine = float(
+            actual @ expected / (np.linalg.norm(actual) * np.linalg.norm(expected))
+        )
+        worst_cosine = min(worst_cosine, cosine)
+        worst_gap = max(worst_gap, float(np.max(np.abs(actual - expected))))
+
+    checks.check(
+        worst_cosine >= 0.9999,
+        f"every probe matches the torch reference (worst cosine {worst_cosine:.10f})",
+        f"only {worst_cosine:.10f} - the backends produce different vectors",
+    )
+    checks.check(
+        worst_gap < 1e-4,
+        f"elementwise agreement within 1e-4 (worst {worst_gap:.2e})",
+        f"worst elementwise gap {worst_gap:.3e}",
+    )
+    # Guards the specific silent-drift case: chroma's onnx encoder implements
+    # one model only, so a custom EMBEDDING_MODEL with the onnx backend falls
+    # back to torch in _load_onnx. If that guard ever regressed, the vectors
+    # above would still agree - but only because the fallback fired. This
+    # asserts the guard's own precondition so the reason stays visible.
+    checks.check(
+        EMBEDDING_BACKEND in {"onnx", "torch"},
+        f"EMBEDDING_BACKEND is a known backend ({EMBEDDING_BACKEND})",
+    )
+    print(
+        f"    backend={EMBEDDING_BACKEND}, {len(probes)} probes, "
+        f"worst cosine {worst_cosine:.10f}, worst elementwise {worst_gap:.2e}"
+    )
 
     # --- report -----------------------------------------------------------
     print()

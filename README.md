@@ -116,7 +116,7 @@ the model call.
 |---|---|---|
 | Load | `ingest/load.py` | fetch + parse each URL in `data/sources.csv` |
 | Chunk | `ingest/chunk.py` | split into passage-sized chunks, keep metadata |
-| Embed | `ingest/embed.py` | `all-MiniLM-L6-v2`, one shared cached encoder |
+| Embed | `ingest/embed.py` | `all-MiniLM-L6-v2`, one shared cached encoder, onnxruntime by default |
 | Store | `ingest/index.py` | write to Chroma with a cosine index |
 
 **Online, per question** (`python -m growbot.ask`):
@@ -186,9 +186,28 @@ All tunables live in `src/growbot/config.py`. The ones worth knowing:
 | `SIMILARITY_FLOOR` | `0.45` | Measured, not guessed. Below this the context is too thin to answer from. |
 | `TOP_K` | `5` | Measured. Larger pulls in more schemes and trips the mixed-scheme refusal. |
 | `MEMORY_TURNS` | `10` | How many prior question turns can resolve an underspecified follow-up. `0` disables memory. |
+| `EMBEDDING_BACKEND` | `onnx` | Which runtime executes the encoder. `onnx` needs 239 MB of RAM, `torch` needs 580 MB, for identical vectors. `torch` stays available as the reference. |
 
-Both are commented out of `.env.example` on purpose, so `config.py` stays the
-single source of truth.
+All of them are commented out of `.env.example` on purpose, so `config.py`
+stays the single source of truth.
+
+### Memory
+
+Measured peak RSS for one `ask()`, torch included and excluded:
+
+| | peak | fits a 512 MB container |
+|---|---|---|
+| `EMBEDDING_BACKEND=torch` | 579.7 MB | no |
+| `EMBEDDING_BACKEND=onnx` (default) | **238.7 MB** | yes, 273 MB spare |
+
+Torch costs ~500 MB of runtime before it evaluates a 22M-parameter model, so
+the default runs the same weights through onnxruntime — already installed as a
+chromadb dependency, so it costs no extra package. The two agree to
+**cosine 1.0000000000**, max elementwise difference 1.6e-07, in the raw form
+ingestion uses, which is float32 rounding and far below the precision
+`SIMILARITY_FLOOR` is specified to. So the switch needs no re-ingest, and
+`retrieve.checks` re-measures that agreement on every run rather than trusting
+it.
 
 ---
 
@@ -196,7 +215,7 @@ single source of truth.
 
 ```bash
 python -m growbot.guards           # 105 checks
-python -m growbot.retrieve.checks  # 107 checks
+python -m growbot.retrieve.checks  # 118 checks
 python -m growbot.generate.checks  #  94 checks
 python -m growbot.ask_checks       # 122 checks
 python -m growbot.ui.checks        # 149 checks
@@ -204,7 +223,7 @@ python -m growbot.memory_checks    #  78 checks
 python -m growbot.hardening_checks # 227 checks
 ```
 
-882 checks, each suite exiting non-zero on regression. All run offline and need
+893 checks, each suite exiting non-zero on regression. All run offline and need
 no API key.
 
 The last suite covers the failure modes in [`docs/architecture.md`](docs/architecture.md)

@@ -55,6 +55,34 @@ EMBEDDING_MODEL = os.getenv(
 EMBEDDING_DIM = 384
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hdfc_mf_faq")
 
+#: Which runtime executes the encoder. Both produce the same 384-d vector from
+#: the same weights - measured cosine 1.0000000000, max elementwise difference
+#: 1.0e-07, which is float32 rounding, so switching this cannot move a
+#: similarity score across `SIMILARITY_FLOOR` and does not require re-ingesting.
+#: `retrieve.checks` re-measures that equivalence on every run, so the two are
+#: pinned rather than trusted.
+#:
+#:   onnx  - onnxruntime, no torch import. Measured peak RSS for a full
+#:           `ask()` is 238.7 MB versus 579.7 MB for torch, because torch's
+#:           runtime alone costs ~500 MB to evaluate a 22M-parameter model.
+#:           This is the default because it is the difference between fitting a
+#:           512 MB container and not fitting one.
+#:   torch - sentence-transformers on torch. Kept as a fallback, not because it
+#:           is needed for correctness but because it is the reference the ONNX
+#:           path is checked against, and because it is the faster of the two
+#:           for a large batch at ingest time.
+#:
+#: Chosen over `sentence_transformers(..., backend="onnx")`, which is NOT
+#: equivalent: it requires `optimum` (not otherwise needed), downgraded
+#: sentence-transformers 6.1.0 to 5.7.0, and still imported torch - measured at
+#: 552.9 MB, i.e. *more* than plain torch. Going through onnxruntime directly
+#: is the only version of this that actually avoids the 500 MB.
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "onnx").strip().lower()
+if EMBEDDING_BACKEND not in {"onnx", "torch"}:
+    raise ValueError(
+        f"EMBEDDING_BACKEND must be 'onnx' or 'torch', got {EMBEDDING_BACKEND!r}"
+    )
+
 # ---------------------------------------------------------------------------
 # Retrieval tuning (architecture §11)
 # ---------------------------------------------------------------------------

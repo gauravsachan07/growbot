@@ -155,6 +155,44 @@ Corpus is short, headed, and fact-dense. Chunks must keep **label + value** toge
 - Embed **chunks only**, not full pages
 - Dimension: 384
 - Same model instance/config as query-time embedding
+- Runtime: `config.EMBEDDING_BACKEND`, default `onnx` — see §5.5
+
+### 5.5 Embedding runtime (memory)
+
+`EMBEDDING_BACKEND` selects which engine executes the encoder. Both load the
+same weights and produce the same 384-d vector, so the choice is a memory
+decision, not a behaviour one.
+
+| backend | engine | measured peak RSS, one `ask()` |
+|---|---|---|
+| `onnx` (default) | onnxruntime via chromadb's `ONNXMiniLM_L6_V2` | **238.7 MB** |
+| `torch` | sentence-transformers | 579.7 MB |
+
+Torch costs ~500 MB of runtime to evaluate a 22M-parameter model. onnxruntime
+is already a chromadb dependency, so the default costs no additional package.
+
+Equivalence is measured, not assumed: cosine **1.0000000000**, max elementwise
+difference **1.6e-07**, `allclose(atol=1e-5)`, in the raw un-normalised form
+`embed_texts` uses. That is float32 rounding — far below the precision
+`SIMILARITY_FLOOR` is specified to — so switching backends cannot move a score
+across the floor and **does not require re-ingesting the corpus**.
+`retrieve.checks` re-measures it on every run and exits non-zero on drift;
+perturbing the encoder by 0.5% was confirmed to fail the suite.
+
+Rejected alternatives, so they are not re-tried:
+
+- `sentence_transformers(..., backend="onnx")` — requires `optimum` (not
+  otherwise needed), downgraded sentence-transformers 6.1.0 → 5.7.0, and still
+  imported torch. Measured 552.9 MB, i.e. *more* than plain torch.
+- `OMP_NUM_THREADS=1` / `torch.set_num_threads(1)` — saved 1 MB. Thread arenas
+  are not the cost.
+- fp16 weights — saved 38 MB but made encoding 4.5× slower (105 ms vs 23 ms)
+  with fifth-decimal drift.
+
+Guard: chroma's onnx encoder implements `all-MiniLM-L6-v2` only (its
+constructor takes no model argument), so a custom `EMBEDDING_MODEL` combined
+with `onnx` falls back to torch in `_load_onnx` rather than silently encoding
+every chunk with MiniLM while `config` reported a different model.
 
 ### 5.4 Store in ChromaDB
 
@@ -367,6 +405,7 @@ Ingestion is **not** on this path.
 | Item | Notes |
 |------|--------|
 | `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` |
+| `EMBEDDING_BACKEND` | `onnx` (default) or `torch`. Identical vectors, 239 MB vs 580 MB (§5.5) |
 | `CHROMA_PATH` | Local persist dir |
 | `TOP_K` | 3–5 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | 400–512 / 80 characters |

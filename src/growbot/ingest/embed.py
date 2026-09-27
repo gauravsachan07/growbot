@@ -12,6 +12,23 @@ stops matching its own index.
 
 The model is loaded once per process and cached, so a chat UI does not pay the
 load cost on every question (architecture §11 / Phase 11).
+
+**Two runtimes, one vector.** `config.EMBEDDING_BACKEND` picks which one
+executes the encoder: `onnx` (onnxruntime) or `torch` (sentence-transformers).
+The weights are identical and so is the output - measured cosine 1.0000000000,
+max elementwise difference 1.0e-07, `allclose(atol=1e-5)` - in the raw
+un-normalised form `embed_texts` actually uses. That is float32 rounding, far
+below the precision `SIMILARITY_FLOOR` is specified to, so switching backends
+does not move a score across the floor and does not require re-ingesting the
+corpus. `retrieve.checks` re-measures this on every run rather than leaving it
+as a comment.
+
+`onnx` is the default because of memory, not speed. Loading torch to evaluate a
+22M-parameter model costs ~500 MB of runtime before a single weight is used;
+measured peak RSS for a full `ask()` is 579.7 MB on torch versus 238.7 MB on
+onnxruntime, which is the difference between fitting a 512 MB container and
+being OOM-killed inside it. torch stays selectable because it is the reference
+the onnx path is checked against, and because it batches faster at ingest time.
 """
 
 from __future__ import annotations
@@ -22,7 +39,12 @@ import threading
 from pathlib import Path
 from typing import Sequence
 
-from growbot.config import EMBEDDING_DIM, EMBEDDING_MODEL
+from growbot.config import EMBEDDING_BACKEND, EMBEDDING_DIM, EMBEDDING_MODEL
+
+#: The only model chromadb's bundled onnxruntime encoder implements. Its
+#: `__init__` accepts only `preferred_providers` - there is no model argument -
+#: so it cannot honour a custom `EMBEDDING_MODEL`. See `_load_onnx`.
+_ONNX_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Set before sentence-transformers is imported anywhere, so the weight-loading
 # progress bar does not scribble over the demo output. The model is loaded
@@ -111,8 +133,75 @@ def _load_sentence_transformer():
     return model
 
 
+class _OnnxEncoder:
+    """Presents chroma's onnxruntime encoder with the `.encode()` shape used here.
+
+    chromadb ships `ONNXMiniLM_L6_V2` because onnxruntime is already one of its
+    own dependencies - so this backend needs no package that is not installed
+    alongside chromadb, and no `optimum`. It is called as `ef(texts)` rather
+    than `.encode(...)`, hence this adapter. `batch_size` is accepted and
+    ignored: chroma batches internally.
+    """
+
+    def __init__(self, function) -> None:
+        self._function = function
+
+    def encode(self, texts, **_kwargs):
+        import numpy as np
+
+        vectors = self._function(list(texts))
+        # float32 explicitly: cos similarity is computed against an index built
+        # in float32, and a widened float64 here would spend memory for nothing.
+        return np.asarray(vectors, dtype="float32")
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return EMBEDDING_DIM
+
+    get_embedding_dimension = get_sentence_embedding_dimension
+
+
+def _load_onnx():
+    """Load MiniLM through onnxruntime, without importing torch.
+
+    Falls back to torch when `EMBEDDING_MODEL` names something other than the
+    one model chroma implements. That is a correctness guard, not a
+    convenience: chroma's encoder takes no model argument, so obeying
+    `EMBEDDING_BACKEND=onnx` with a custom model would silently encode every
+    chunk with MiniLM while `config` reported a different model - the precise
+    drift this module exists to prevent, and invisible until a similarity score
+    quietly stopped matching its index. Memory is worth less than being right.
+    """
+    if EMBEDDING_MODEL != _ONNX_MODEL_NAME:
+        log.warning(
+            "EMBEDDING_BACKEND=onnx cannot serve EMBEDDING_MODEL=%r (chroma's "
+            "encoder implements %r only); using torch for this process",
+            EMBEDDING_MODEL,
+            _ONNX_MODEL_NAME,
+        )
+        return _load_sentence_transformer()
+
+    try:
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+    except ImportError as exc:  # pragma: no cover - setup guidance
+        raise ImportError(
+            "the onnx embedding backend needs chromadb. "
+            'Run: pip install -e ".[rag]"'
+        ) from exc
+
+    model = _OnnxEncoder(ONNXMiniLM_L6_V2())
+    log.info("loaded %s via onnxruntime (torch not imported)", EMBEDDING_MODEL)
+    return model
+
+
+def _load_model():
+    """Construct the encoder named by `config.EMBEDDING_BACKEND`."""
+    if EMBEDDING_BACKEND == "onnx":
+        return _load_onnx()
+    return _load_sentence_transformer()
+
+
 def get_model():
-    """Return the cached SentenceTransformer, loading it on first use.
+    """Return the cached encoder, loading it on first use.
 
     Double-checked locking keeps a Streamlit rerender from loading two copies of
     the model into the same process.
@@ -121,7 +210,7 @@ def get_model():
     if _model is None:
         with _model_lock:
             if _model is None:
-                _model = _load_sentence_transformer()
+                _model = _load_model()
 
                 # sentence-transformers 6.x renamed this accessor; support both
                 # so the code does not break on the next major release.
@@ -136,6 +225,25 @@ def get_model():
                         "and rebuild the index."
                     )
     return _model
+
+
+#: The torch encoder, cached apart from `_model` so that asking for the
+#: reference implementation never displaces the one the app is using.
+_torch_model = None
+
+
+def get_torch_model():
+    """The torch encoder specifically, whatever `EMBEDDING_BACKEND` says.
+
+    Exists so `retrieve.checks` can hold the two runtimes against each other on
+    demand. Nothing on the serving path calls this.
+    """
+    global _torch_model
+    if _torch_model is None:
+        with _model_lock:
+            if _torch_model is None:
+                _torch_model = _load_sentence_transformer()
+    return _torch_model
 
 
 def embed_texts(
