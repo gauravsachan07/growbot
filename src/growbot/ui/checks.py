@@ -323,6 +323,31 @@ def _check_thread(checks: Checks) -> None:
     print("    2 turns, no duplicated cards, PAN never returns in an answer")
 
 
+def _sample_qa_questions(root: Path) -> list | None:
+    """Read the question list out of `tools/regen_sample_qa.py`, or None.
+
+    `tools/` is a directory of scripts rather than an installed package, so it is
+    loaded by path. Reading the list instead of hard-coding a number is the
+    whole point - the count is stated in three places (the generator, the README
+    and the generated doc) and it has already drifted once.
+    """
+    import importlib.util
+
+    path = root / "tools" / "regen_sample_qa.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("_regen_sample_qa", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:  # noqa: BLE001 - a broken tool is a failure, not a crash
+        return None
+    questions = getattr(module, "QUESTIONS", None)
+    return questions if isinstance(questions, list) else None
+
+
 def _check_demo_pack(checks: Checks) -> None:
     """Phase 10's "Done when", enforced rather than asserted in prose.
 
@@ -504,8 +529,45 @@ def _check_demo_pack(checks: Checks) -> None:
         checks.check(
             (root / tool).exists(), f"{tool} exists where the README says"
         )
+
+    # The sample-Q&A count has gone stale before: the generator grew an eleventh
+    # question (the memory follow-up) and the README kept saying ten, so a
+    # reader would conclude a question had been dropped. The number lives in
+    # three places, so it is read from the generator rather than written twice.
+    questions = _sample_qa_questions(root)
+    checks.check(
+        questions is not None,
+        "tools/regen_sample_qa.py exposes a QUESTIONS list",
+    )
+    if questions:
+        count = len(questions)
+        stated = re.search(r"re-asks all (\d+) questions", readme)
+        checks.check(
+            bool(stated) and int(stated.group(1)) == count,
+            f"README says the generator re-asks all {count} questions",
+            f"generator holds {count}, README says "
+            f"{stated.group(1) if stated else 'nothing'}",
+        )
+        sample_qa = root / "docs" / "sample_qa.md"
+        ids = [
+            int(number)
+            for number in re.findall(
+                r"(?m)^#{1,4}\s*Q(\d+)", sample_qa.read_text(encoding="utf-8")
+            )
+        ]
+        checks.check(
+            len(ids) == count,
+            f"docs/sample_qa.md holds all {count} generated answers",
+            f"found {len(ids)} Q headings - rerun tools/regen_sample_qa.py",
+        )
+        checks.check(
+            ids == list(range(1, count + 1)),
+            "sample_qa.md question numbers run 1..N with no gaps or repeats",
+            f"found {ids}",
+        )
     print(f"    {len(required)} required mentions, 5 schemes, 8 pipeline stages, "
-          f"counts sum to {total} across {len(counts)} suites")
+          f"counts sum to {total} across {len(counts)} suites, "
+          f"{len(questions) if questions else 0} sample questions accounted for")
 
 
 # --- the UI passes conversation history ---------------------------

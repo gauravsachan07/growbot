@@ -179,16 +179,17 @@ LLM_BASE_URL = os.getenv(
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "45"))
 #: Three short sentences need ~60 tokens. This is deliberately far above that,
-#: because a real provider call on gemini-3.8-flash was measured returning
-#: finish_reason="length" with the answer cut mid-sentence, and at low budgets
-#: the response carried no content key at all. The headroom is cheap; a
-#: truncated answer shown to a user is not recoverable. Raise this if a model
-#: reports truncation, lower it only to cut cost on a paid tier.
+#: because a real provider call was measured returning finish_reason="length"
+#: with the answer cut mid-sentence, and at low budgets the response carried no
+#: content key at all. The headroom is cheap; a truncated answer shown to a user
+#: is not recoverable. Raise this if a model reports truncation, lower it only
+#: to cut cost on a paid tier.
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "800"))
 #: Attempts per call, including the first. Not a nice-to-have: a measured ~50%
 #: of calls to gemini-3.8-flash returned HTTP 503 "high demand", which is
-#: transient by the provider's own wording. Without a retry the bot fails
-#: roughly every other question during a live demo.
+#: transient by the provider's own wording, and Groq's free tier (the provider
+#: `.env.example` ships) returns 429 once a minute's token allowance runs out.
+#: Either way a single attempt makes the bot fail during a live demo.
 LLM_MAX_ATTEMPTS = int(os.getenv("LLM_MAX_ATTEMPTS", "4"))
 #: First backoff step in seconds; doubles per attempt, jittered, capped.
 #: 4 attempts at 1.5s spans about 8s of waiting, which is long enough to cover

@@ -218,12 +218,12 @@ python -m growbot.guards           # 105 checks
 python -m growbot.retrieve.checks  # 118 checks
 python -m growbot.generate.checks  #  94 checks
 python -m growbot.ask_checks       # 122 checks
-python -m growbot.ui.checks        # 149 checks
+python -m growbot.ui.checks        # 153 checks
 python -m growbot.memory_checks    #  78 checks
 python -m growbot.hardening_checks # 227 checks
 ```
 
-893 checks, each suite exiting non-zero on regression. All run offline and need
+897 checks, each suite exiting non-zero on regression. All run offline and need
 no API key.
 
 The last suite covers the failure modes in [`docs/architecture.md`](docs/architecture.md)
@@ -241,7 +241,7 @@ accurate, so the documentation cannot quietly go stale.
 
 ```bash
 python tools/eval_citations.py     # citation accuracy against the live model
-python tools/regen_sample_qa.py    # re-asks all 10 questions, rewrites sample_qa.md
+python tools/regen_sample_qa.py    # re-asks all 11 questions, rewrites sample_qa.md
 python tools/regen_disclaimer.py   # rewrites disclaimer.md from the UI strings
 ```
 
