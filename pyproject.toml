@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "growbot"
+version = "0.1.0"
+description = "Growbot - mutual fund facts-only FAQ assistant (class-demo RAG)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "pypdf>=4.0",
+    "python-dotenv>=1.0",
+]
+
+# Phases 3-9. Installed separately so the loading stage (Phase 1) stays light.
+# NOTE: sentence-transformers pulls torch. On Python 3.13/3.14 torch wheels may
+# be unavailable - build the venv on 3.10-3.12.
+[project.optional-dependencies]
+rag = [
+    "chromadb>=0.5",
+    "sentence-transformers>=2.7",
+]
+ui = [
+    "streamlit>=1.40",
+]
+all = [
+    "chromadb>=0.5",
+    "sentence-transformers>=2.7",
+    "streamlit>=1.40",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
